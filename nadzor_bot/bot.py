@@ -1,18 +1,27 @@
+import asyncio
 import logging
 import os
 from typing import Dict, List
 
-from aiogram import Bot, Dispatcher, executor, types
-from aiogram.contrib.fsm_storage.memory import MemoryStorage
-from aiogram.dispatcher import FSMContext
-from aiogram.dispatcher.filters.state import State, StatesGroup
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
+from aiogram import Bot, Dispatcher, F, Router
+from aiogram.filters import Command, StateFilter
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.types import (
+    CallbackQuery,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    Message,
+    ReplyKeyboardMarkup,
+    ReplyKeyboardRemove,
+)
 
 from nadzor_bot.db import add_request, get_last_requests, get_request, init_db, update_request_status
 
 logging.basicConfig(level=logging.INFO)
 
-BOT_TOKEN = os.getenv("8574187993:AAGyAGdjsmMUr89GAWpB2RnZOMfNf24koG0")
+BOT_TOKEN = os.getenv("BOT_TOKEN")
 if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN is not set in environment variables")
 
@@ -85,13 +94,12 @@ def format_request_card(request_data) -> str:
     )
 
 
-storage = MemoryStorage()
 bot = Bot(token=BOT_TOKEN)
-dp = Dispatcher(bot, storage=storage)
+router = Router()
 
 
-@dp.message_handler(commands=["start"])
-async def cmd_start(message: types.Message) -> None:
+@router.message(Command("start"), StateFilter("*"))
+async def cmd_start(message: Message) -> None:
     init_db()
     user_is_admin = is_admin(message.from_user.id)
     greeting = [
@@ -103,8 +111,8 @@ async def cmd_start(message: types.Message) -> None:
     await message.answer("\n".join(greeting), reply_markup=main_keyboard(user_is_admin))
 
 
-@dp.message_handler(lambda message: message.text == "ℹ️ Как это работает")
-async def how_it_works(message: types.Message) -> None:
+@router.message(F.text == "ℹ️ Как это работает", StateFilter("*"))
+async def how_it_works(message: Message) -> None:
     text = (
         "Оставляете заявку\n"
         "Мы подбираем мастера и подключаем техинспектора\n"
@@ -114,50 +122,50 @@ async def how_it_works(message: types.Message) -> None:
     await message.answer(text)
 
 
-@dp.message_handler(lambda message: message.text == "📝 Оставить заявку", state="*")
-async def start_request_flow(message: types.Message, state: FSMContext) -> None:
-    await state.finish()
-    await message.answer("Как вас зовут?", reply_markup=types.ReplyKeyboardRemove())
-    await RequestForm.name.set()
+@router.message(F.text == "📝 Оставить заявку", StateFilter("*"))
+async def start_request_flow(message: Message, state: FSMContext) -> None:
+    await state.clear()
+    await state.set_state(RequestForm.name)
+    await message.answer("Как вас зовут?", reply_markup=ReplyKeyboardRemove())
 
 
-@dp.message_handler(state=RequestForm.name)
-async def process_name(message: types.Message, state: FSMContext) -> None:
+@router.message(RequestForm.name)
+async def process_name(message: Message, state: FSMContext) -> None:
     await state.update_data(name=message.text.strip())
+    await state.set_state(RequestForm.phone)
     await message.answer("Ваш номер телефона?")
-    await RequestForm.phone.set()
 
 
-@dp.message_handler(state=RequestForm.phone)
-async def process_phone(message: types.Message, state: FSMContext) -> None:
+@router.message(RequestForm.phone)
+async def process_phone(message: Message, state: FSMContext) -> None:
     await state.update_data(phone=message.text.strip())
+    await state.set_state(RequestForm.district)
     await message.answer("Укажите район Ташкента")
-    await RequestForm.district.set()
 
 
-@dp.message_handler(state=RequestForm.district)
-async def process_district(message: types.Message, state: FSMContext) -> None:
+@router.message(RequestForm.district)
+async def process_district(message: Message, state: FSMContext) -> None:
     await state.update_data(district=message.text.strip())
+    await state.set_state(RequestForm.address)
     await message.answer("Введите адрес или ориентир (ЖК, улица, дом/кв.)")
-    await RequestForm.address.set()
 
 
-@dp.message_handler(state=RequestForm.address)
-async def process_address(message: types.Message, state: FSMContext) -> None:
+@router.message(RequestForm.address)
+async def process_address(message: Message, state: FSMContext) -> None:
     await state.update_data(address=message.text.strip())
+    await state.set_state(RequestForm.area)
     await message.answer("Примерная площадь стен (м²)?")
-    await RequestForm.area.set()
 
 
-@dp.message_handler(state=RequestForm.area)
-async def process_area(message: types.Message, state: FSMContext) -> None:
+@router.message(RequestForm.area)
+async def process_area(message: Message, state: FSMContext) -> None:
     await state.update_data(area=message.text.strip())
+    await state.set_state(RequestForm.comment)
     await message.answer("Комментарий (что нужно сделать, сроки и т.п.)")
-    await RequestForm.comment.set()
 
 
-@dp.message_handler(state=RequestForm.comment)
-async def process_comment(message: types.Message, state: FSMContext) -> None:
+@router.message(RequestForm.comment)
+async def process_comment(message: Message, state: FSMContext) -> None:
     await state.update_data(comment=message.text.strip())
     data = await state.get_data()
 
@@ -177,7 +185,7 @@ async def process_comment(message: types.Message, state: FSMContext) -> None:
         "Мы подберём мастера, подключим тех-инспектора и свяжемся.",
         reply_markup=main_keyboard(is_admin(message.from_user.id)),
     )
-    await state.finish()
+    await state.clear()
 
     for admin_id in ADMINS:
         try:
@@ -190,8 +198,8 @@ async def process_comment(message: types.Message, state: FSMContext) -> None:
             logging.exception("Failed to notify admin %s: %s", admin_id, exc)
 
 
-@dp.message_handler(lambda message: message.text == "🛠 Админ-панель")
-async def admin_panel(message: types.Message) -> None:
+@router.message(F.text == "🛠 Админ-панель", StateFilter("*"))
+async def admin_panel(message: Message) -> None:
     if not is_admin(message.from_user.id):
         await message.answer("Нет доступа")
         return
@@ -216,32 +224,32 @@ async def admin_panel(message: types.Message) -> None:
     await message.answer("\n".join(lines), reply_markup=keyboard)
 
 
-@dp.callback_query_handler(lambda c: c.data and c.data.startswith("details:"))
-async def request_details(callback: types.CallbackQuery) -> None:
+@router.callback_query(F.data.startswith("details:"))
+async def request_details(callback: CallbackQuery) -> None:
     if not is_admin(callback.from_user.id):
         await callback.answer("Нет доступа", show_alert=True)
         return
 
-    _, request_id = callback.data.split(":", 1)
+    _, request_id = callback.data.split(":", 1)  # type: ignore[union-attr]
     request = get_request(int(request_id))
     if not request:
         await callback.answer("Заявка не найдена", show_alert=True)
         return
 
-    await callback.message.edit_text(
+    await callback.message.edit_text(  # type: ignore[union-attr]
         format_request_card(request),
         reply_markup=status_keyboard(request["id"], request["status"]),
     )
     await callback.answer()
 
 
-@dp.callback_query_handler(lambda c: c.data and c.data.startswith("setstatus:"))
-async def set_status(callback: types.CallbackQuery) -> None:
+@router.callback_query(F.data.startswith("setstatus:"))
+async def set_status(callback: CallbackQuery) -> None:
     if not is_admin(callback.from_user.id):
         await callback.answer("Нет доступа", show_alert=True)
         return
 
-    _, request_id_str, status_code = callback.data.split(":", 2)
+    _, request_id_str, status_code = callback.data.split(":", 2)  # type: ignore[union-attr]
     request_id = int(request_id_str)
 
     if not update_request_status(request_id, status_code):
@@ -250,7 +258,7 @@ async def set_status(callback: types.CallbackQuery) -> None:
 
     updated_request = get_request(request_id)
     if updated_request:
-        await callback.message.edit_text(
+        await callback.message.edit_text(  # type: ignore[union-attr]
             format_request_card(updated_request),
             reply_markup=status_keyboard(request_id, status_code),
         )
@@ -260,13 +268,23 @@ async def set_status(callback: types.CallbackQuery) -> None:
         try:
             await bot.send_message(
                 updated_request["tg_user_id"],
-                f"🔔 Статус вашей заявки #{request_id} обновлён:\n"
-                f"{STATUS_LABELS.get(status_code, status_code)}",
+                "\n".join(
+                    [
+                        f"🔔 Статус вашей заявки #{request_id} обновлён:",
+                        STATUS_LABELS.get(status_code, status_code),
+                    ]
+                ),
             )
         except Exception as exc:  # noqa: BLE001
             logging.exception("Failed to notify user %s: %s", updated_request["tg_user_id"], exc)
 
 
-if __name__ == "__main__":
+async def main() -> None:
     init_db()
-    executor.start_polling(dp, skip_updates=True)
+    dispatcher = Dispatcher(storage=MemoryStorage())
+    dispatcher.include_router(router)
+    await dispatcher.start_polling(bot)
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
