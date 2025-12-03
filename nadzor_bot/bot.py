@@ -12,7 +12,7 @@ from nadzor_bot.db import add_request, get_last_requests, get_request, init_db, 
 
 logging.basicConfig(level=logging.INFO)
 
-BOT_TOKEN = os.getenv("BOT_TOKEN")
+BOT_TOKEN = os.getenv("8574187993:AAGyAGdjsmMUr89GAWpB2RnZOMfNf24koG0")
 if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN is not set in environment variables")
 
